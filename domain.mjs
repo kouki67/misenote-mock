@@ -63,7 +63,7 @@ export const createSeed = () => {
       template('meeting', '店舗ミーティングの準備をする', { frequency: 'weekly', weekday: 1 }),
     ];
   });
-  return generateRecurringTasks(seed);
+  return generateRecurringTasks(addDemoOwner(seed));
 };
 
 export const isComplete = (task) => task.scope === 'personal'
@@ -72,13 +72,13 @@ export const isComplete = (task) => task.scope === 'personal'
     ? task.confirmers.every((id) => Boolean(task.completions[id]))
     : Object.keys(task.completions).length > 0;
 
-export const canRead = (task, user) => task.storeId === user.storeId &&
-  (task.scope === 'store' || user.role === 'admin' || task.assigneeId === user.id);
+export const canRead = (task, user) => user.role === 'owner' || (task.storeId === user.storeId &&
+  (task.scope === 'store' || user.role === 'admin' || task.assigneeId === user.id));
 
-export const canEdit = (task, user) => task.storeId === user.storeId &&
+export const canEdit = (task, user) => user.role !== 'owner' && task.storeId === user.storeId &&
   (user.role === 'admin' || task.createdBy === user.id);
 
-export const canComplete = (task, user) => !task.skippedAt && task.storeId === user.storeId && (
+export const canComplete = (task, user) => user.role !== 'owner' && !task.skippedAt && task.storeId === user.storeId && (
   task.scope === 'personal'
     ? task.assigneeId === user.id
     : task.confirmers.length > 0
@@ -99,6 +99,21 @@ export const taskStats = (tasks) => ({
   done: tasks.filter((task) => !task.skippedAt && isComplete(task)).length,
   pending: tasks.filter((task) => !task.skippedAt && !isComplete(task)).length,
 });
+
+export const overviewTasks = (state, user, { storeId = 'all', scope = 'all', status = 'all', query = '' } = {}) => {
+  if (user.role !== 'owner') return [];
+  const memberNames = new Map(state.members.map((member) => [member.id, member.name]));
+  const storeNames = new Map(state.stores.map((store) => [store.id, store.name]));
+  const search = query.trim().toLocaleLowerCase();
+  const statusOf = (task) => task.skippedAt ? 'skipped' : isComplete(task) ? 'done' : 'pending';
+  const statusOrder = { pending: 0, done: 1, skipped: 2 };
+  return state.tasks.filter((task) => canRead(task, user) && (storeId === 'all' || task.storeId === storeId) &&
+    (scope === 'all' || task.scope === scope) && (status === 'all' || statusOf(task) === status) &&
+    [task.title, task.detail, storeNames.get(task.storeId), memberNames.get(task.assigneeId), ...task.confirmers.map((id) => memberNames.get(id))]
+      .join(' ').toLocaleLowerCase().includes(search))
+    .sort((a, b) => statusOrder[statusOf(a)] - statusOrder[statusOf(b)] ||
+      (a.dueDate || '9999-12-31').localeCompare(b.dueDate || '9999-12-31') || a.storeId.localeCompare(b.storeId) || a.id.localeCompare(b.id));
+};
 
 const dateFromString = (value) => new Date(`${value}T00:00:00Z`);
 const dateString = (date) => date.toISOString().slice(0, 10);
@@ -184,15 +199,23 @@ export const updateRecurringTemplate = (state, template, asOf = localDate()) => 
   return generateRecurringTasks({ ...state, tasks, recurringTemplates }, asOf);
 };
 
+const addDemoOwner = (state) => {
+  if (state.members.some((member) => member.role === 'owner')) return state;
+  const memberIds = new Set(state.members.map((member) => member.id));
+  let id = 'demo-owner';
+  while (memberIds.has(id)) id += '-1';
+  return { ...state, members: [...state.members, { id, name: '全体管理者', shortName: '管理', color: 'green', role: 'owner', storeId: state.stores[0].id }] };
+};
+
 export const migrateState = (value) => {
   if (!value || typeof value !== 'object' || !Array.isArray(value.members)) return value;
-  if (value.stores !== undefined) return value;
   const storeIds = [...new Set(value.members.map((member) => member?.storeId))];
-  return {
+  const migrated = value.stores !== undefined ? value : {
     ...value,
     stores: storeIds.map((id) => ({ id, name: id === STORE_ID ? 'こもれび珈琲 本店' : '店舗' })),
     recurringTemplates: [],
   };
+  return isValidState(migrated) ? addDemoOwner(migrated) : migrated;
 };
 
 export const isValidState = (value) => {
@@ -203,7 +226,7 @@ export const isValidState = (value) => {
   const storeIds = new Set(value.stores.map((store) => store.id));
   const validMembers = value.members.every((member) =>
     ['name', 'shortName', 'color', 'storeId'].every((key) => typeof member[key] === 'string') &&
-    storeIds.has(member.storeId) && ['admin', 'member'].includes(member.role));
+    storeIds.has(member.storeId) && ['owner', 'admin', 'member'].includes(member.role));
   if (!validMembers) return false;
   const members = new Map(value.members.map((member) => [member.id, member]));
   const belongsToStore = (id, storeId) => members.get(id)?.storeId === storeId;

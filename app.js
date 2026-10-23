@@ -1,14 +1,15 @@
-import { createSeed, localDate, isComplete, canRead, canEdit, canComplete, toggleCompletion, taskStats, isValidState, migrateState, addDays, isValidDate, isValidSchedule, recurrenceDates, generateRecurringTasks, updateRecurringTemplate } from './domain.mjs';
+import { createSeed, localDate, isComplete, canRead, canEdit, canComplete, toggleCompletion, taskStats, isValidState, migrateState, addDays, isValidDate, isValidSchedule, recurrenceDates, generateRecurringTasks, updateRecurringTemplate, overviewTasks } from './domain.mjs';
 
 const STORAGE_KEY = 'misenote-demo-v1';
 const app = document.querySelector('#app');
 const overlays = document.querySelector('#overlays');
 let storageUnavailable = false;
 let data = loadData();
-let currentUserId = data.members.find((member) => member.role === 'admin').id;
-let page = 'today';
+let currentUserId = data.members.find((member) => member.role === 'owner')?.id || data.members.find((member) => member.role === 'admin').id;
+let page = data.members.find((member) => member.id === currentUserId).role === 'owner' ? 'overview' : 'today';
 let scopeFilter = 'all';
-let statusFilter = 'pending';
+let statusFilter = page === 'overview' ? 'all' : 'pending';
+let overviewStore = 'all';
 let query = '';
 let selectedMember = 'all';
 let toastTimer;
@@ -44,7 +45,9 @@ const icon = (name, extra = '') => `<svg class="icon ${extra}" viewBox="0 0 24 2
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const user = () => data.members.find((member) => member.id === currentUserId);
 const currentStore = () => data.stores.find((store) => store.id === user().storeId);
-const storeMembers = () => data.members.filter((member) => member.storeId === user().storeId);
+const storeMembers = () => data.members.filter((member) => member.storeId === user().storeId && member.role !== 'owner');
+const demoUsers = () => [...data.members.filter((member) => member.role === 'owner'), ...storeMembers()];
+const roleLabel = (role) => role === 'owner' ? '全体管理者' : role === 'admin' ? '店長' : 'メンバー';
 const storeTemplates = () => data.recurringTemplates.filter((template) => template.storeId === user().storeId);
 const memberById = (id) => data.members.find((member) => member.id === id);
 const avatar = (member, size = '') => `<span class="avatar ${escapeHtml(member?.color || 'green')} ${size}" title="${escapeHtml(member?.name || 'メンバー')}">${escapeHtml(member?.shortName?.slice(0, 1) || '？')}</span>`;
@@ -83,10 +86,11 @@ function toast(message) {
 }
 
 function navigate(nextPage) {
-  page = nextPage;
+  page = user().role === 'owner' ? 'overview' : nextPage;
   query = '';
   scopeFilter = 'all';
-  statusFilter = 'pending';
+  statusFilter = page === 'overview' ? 'all' : 'pending';
+  overviewStore = 'all';
   selectedMember = 'all';
   closeModal();
   render();
@@ -97,8 +101,11 @@ function render() {
   const activeSearch = document.activeElement?.id === 'task-search';
   const selection = activeSearch ? document.activeElement.selectionStart : null;
   const me = user();
+  const isOwner = me.role === 'owner';
+  if (!isOwner && page === 'overview') page = 'today';
+  if (isOwner) page = 'overview';
   if (me.role !== 'admin' && ['progress', 'members', 'recurring'].includes(page)) page = 'today';
-  const nav = [
+  const nav = isOwner ? [['overview', 'store', '全店舗一覧', '']] : [
     ['today', 'grid', 'タスク', ''],
     ...(me.role === 'admin' ? [['recurring', 'reset', '定期タスク', ''], ['progress', 'chart', 'みんなの進捗', ''], ['members', 'users', 'メンバー管理', '']] : []),
   ];
@@ -106,20 +113,18 @@ function render() {
   app.innerHTML = `
     <aside class="sidebar">
       <a class="brand" href="#" data-action="navigate" data-page="today"><span class="brand-mark">${icon('logo')}</span><span>みせノート<span class="brand-dot">.</span></span></a>
-      <div class="store-identity"><span class="store-symbol">${icon('store')}</span><div><strong>${escapeHtml(currentStore().name)}</strong><span>${storeMembers().length}人のチーム</span></div></div>
-      <p class="nav-caption">ワークスペース</p>
+      <div class="store-identity"><span class="store-symbol">${icon('store')}</span><div><strong>${isOwner ? '全店舗のタスク' : escapeHtml(currentStore().name)}</strong><span>${isOwner ? `${data.stores.length}店舗` : `${storeMembers().length}人`}</span></div></div>
       <nav class="main-nav" aria-label="メインメニュー">${nav.map(([id, glyph, label, count]) => `<button class="nav-item ${page === id ? 'active' : ''}" data-action="navigate" data-page="${id}" ${page === id ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span>${count ? `<span class="nav-count">${count}</span>` : ''}</button>`).join('')}</nav>
-      <div class="sidebar-team"><p class="nav-caption">お店のメンバー <span>${storeMembers().length}</span></p>${storeMembers().map((member) => `<div class="sidebar-person">${avatar(member, 'small')}<span>${escapeHtml(member.name)}</span>${member.role === 'admin' ? '<span class="manager-label">店長</span>' : '<span class="presence-dot" aria-label="メンバー"></span>'}</div>`).join('')}</div>
-      <div class="sidebar-bottom"><div class="demo-hint">${icon('leaf')}<strong>小さなチームに、<br>ちょうどいいタスク管理。</strong><span>ひとつずつ、みんなで。</span></div><button class="subtle-button reset-button" data-action="reset">${icon('reset')}デモを最初の状態に戻す</button></div>
+      ${isOwner ? `<div class="sidebar-team"><p class="nav-caption">店舗</p><button class="sidebar-person overview-store-link ${overviewStore === 'all' ? 'selected' : ''}" data-action="overview-store" data-id="all">${icon('grid')}すべての店舗</button>${data.stores.map((store) => `<button class="sidebar-person overview-store-link ${overviewStore === store.id ? 'selected' : ''}" data-action="overview-store" data-id="${escapeHtml(store.id)}">${icon('store')}<span>${escapeHtml(store.name)}</span></button>`).join('')}</div>` : `<div class="sidebar-team"><p class="nav-caption">メンバー</p>${storeMembers().map((member) => `<div class="sidebar-person">${avatar(member, 'small')}<span>${escapeHtml(member.name)}</span>${member.role === 'admin' ? '<span class="manager-label">店長</span>' : '<span class="presence-dot" aria-label="メンバー"></span>'}</div>`).join('')}</div>`}
+      <div class="sidebar-bottom"><button class="subtle-button reset-button" data-action="reset">${icon('reset')}デモをリセット</button></div>
     </aside>
     <div class="workspace">
-      <header class="topbar"><div class="breadcrumb">${icon('logo')}<span>みせノート</span><span class="slash">/</span><strong>${nav.find(([id]) => id === page)?.[2] || 'タスク'}</strong></div><div class="user-picker"><span class="demo-pill">体験用モック</span><label class="user-select">${avatar(me, 'small')}<select id="demo-user" aria-label="体験するメンバーを切り替え">${storeMembers().map((member) => `<option value="${escapeHtml(member.id)}" ${member.id === me.id ? 'selected' : ''}>${escapeHtml(member.name)}${member.role === 'admin' ? '（店長）' : '（メンバー）'}</option>`).join('')}</select>${icon('down')}</label></div></header>
+      <header class="topbar"><div class="breadcrumb">${icon('logo')}<span>みせノート</span></div><div class="user-picker"><button class="demo-pill" data-action="demo-info" aria-label="デモについて">デモ</button><label class="user-select">${avatar(me, 'small')}<select id="demo-user" aria-label="体験するメンバーを切り替え">${demoUsers().map((member) => `<option value="${escapeHtml(member.id)}" ${member.id === me.id ? 'selected' : ''}>${escapeHtml(member.name)}${member.role === 'owner' ? '' : `（${roleLabel(member.role)}）`}</option>`).join('')}</select>${icon('down')}</label></div></header>
       <main class="main-content" id="main-content">
-        <div class="store-toolbar"><label class="store-switcher">${icon('store')}<span class="sr-only">体験する店舗を切り替え</span><select id="store-switcher" aria-label="体験する店舗を切り替え">${data.stores.map((store) => `<option value="${escapeHtml(store.id)}" ${store.id === me.storeId ? 'selected' : ''}>${escapeHtml(store.name)}</option>`).join('')}</select>${icon('down')}</label>${me.role === 'admin' ? `<button class="text-button" data-action="add-store">${icon('plus')}店舗を追加</button>` : ''}<span class="store-switch-note">店舗を切り替えると、その店舗の店長として体験できます。</span></div>
-        ${page === 'progress' ? renderProgress() : page === 'members' ? renderMembers() : page === 'recurring' ? renderRecurring() : renderTaskPage()}
-        <footer class="page-footer"><span>${icon('logo')}みせノート</span><span>架空のお店・サンプルデータです。変更はこのブラウザ内に保存されます。</span></footer>
+        ${!isOwner ? `<div class="store-toolbar"><label class="store-switcher">${icon('store')}<span class="sr-only">体験する店舗を切り替え</span><select id="store-switcher" aria-label="体験する店舗を切り替え">${data.stores.map((store) => `<option value="${escapeHtml(store.id)}" ${store.id === me.storeId ? 'selected' : ''}>${escapeHtml(store.name)}</option>`).join('')}</select>${icon('down')}</label>${me.role === 'admin' ? `<button class="text-button" data-action="add-store">${icon('plus')}店舗を追加</button>` : ''}</div>` : ''}
+        ${page === 'overview' ? renderOverview() : page === 'progress' ? renderProgress() : page === 'members' ? renderMembers() : page === 'recurring' ? renderRecurring() : renderTaskPage()}
       </main>
-      <nav class="mobile-nav" aria-label="モバイルメニュー">${nav.map(([id, glyph]) => `<button class="${page === id ? 'active' : ''}" data-action="navigate" data-page="${id}" ${page === id ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${id === 'today' ? 'タスク' : id === 'recurring' ? '定期タスク' : id === 'progress' ? '進捗' : 'メンバー'}</span></button>`).join('')}</nav>
+      <nav class="mobile-nav" aria-label="モバイルメニュー">${nav.map(([id, glyph]) => `<button class="${page === id ? 'active' : ''}" data-action="navigate" data-page="${id}" ${page === id ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${id === 'overview' ? '全店舗一覧' : id === 'today' ? 'タスク' : id === 'recurring' ? '定期タスク' : id === 'progress' ? '進捗' : 'メンバー'}</span></button>`).join('')}</nav>
     </div>`;
   if (activeSearch) {
     const input = document.querySelector('#task-search');
@@ -128,8 +133,33 @@ function render() {
   }
 }
 
-function renderPageHeading(title, description, action = true) {
-  return `<div class="page-heading"><div><p class="date-label">${fullDate(new Date())}</p><h1>${title}</h1><p class="page-description">${description}</p></div>${action ? `<button class="button primary add-task" data-action="add">${icon('plus')}<span>タスクを追加</span></button>` : ''}</div>`;
+function renderPageHeading(title, action = true, meta = '') {
+  return `<div class="page-heading"><div class="page-title"><h1>${title}</h1>${meta ? `<span class="heading-meta">${escapeHtml(meta)}</span>` : ''}</div>${action ? `<button class="button primary add-task" data-action="add" aria-label="タスクを追加">${icon('plus')}<span>タスクを追加</span></button>` : ''}</div>`;
+}
+
+function renderOverview() {
+  if (user().role !== 'owner') return '';
+  const tasks = overviewTasks(data, user(), { storeId: overviewStore, scope: scopeFilter, status: statusFilter, query });
+  const stats = taskStats(tasks);
+  const overdue = tasks.filter((task) => !task.skippedAt && !isComplete(task) && task.dueDate && task.dueDate < today()).length;
+  const scopeTabs = [['all', 'すべて'], ['store', '店舗'], ['personal', '個人']];
+  const filtered = overviewStore !== 'all' || scopeFilter !== 'all' || statusFilter !== 'all' || query;
+  return `${renderPageHeading('全店舗一覧', false)}
+    <section class="overview-panel" aria-label="全店舗のタスク一覧"><div class="task-panel-heading"><div class="scope-tabs" role="group" aria-label="表示するタスクの種類">${scopeTabs.map(([value, label]) => `<button class="scope-tab ${scopeFilter === value ? 'active' : ''}" data-action="scope" data-value="${value}" aria-pressed="${scopeFilter === value}">${label}${scopeFilter === value ? `<span>${tasks.length}</span>` : ''}</button>`).join('')}</div><div class="compact-stats"><span>未完了 <strong>${stats.pending}</strong></span>${overdue ? `<span class="late">期限超過 <strong>${overdue}</strong></span>` : ''}</div></div>
+    <div class="overview-tools"><select id="overview-store-filter" class="filter-select" aria-label="店舗で絞り込み"><option value="all" ${overviewStore === 'all' ? 'selected' : ''}>すべての店舗</option>${data.stores.map((store) => `<option value="${escapeHtml(store.id)}" ${overviewStore === store.id ? 'selected' : ''}>${escapeHtml(store.name)}</option>`).join('')}</select><select id="status-filter" class="filter-select" aria-label="完了状況で絞り込み">${[['all', 'すべての状態'], ['pending', '未完了'], ['done', '完了'], ['skipped', 'スキップ']].map(([value, label]) => `<option value="${value}" ${statusFilter === value ? 'selected' : ''}>${label}</option>`).join('')}</select><label class="search-box overview-search">${icon('search')}<input id="task-search" type="search" placeholder="検索" aria-label="タスクを検索" value="${escapeHtml(query)}" /></label>${filtered ? '<button class="text-button overview-clear" data-action="navigate" data-page="overview">クリア</button>' : ''}</div>
+    <p class="sr-only" aria-live="polite">${tasks.length}件</p>
+    ${tasks.length ? `<table class="overview-table"><caption class="sr-only">全店舗の店舗タスクと個人タスク</caption><thead><tr><th scope="col">タスク</th><th scope="col">店舗</th><th scope="col">担当</th><th scope="col">期限</th><th scope="col">状況</th></tr></thead><tbody>${tasks.map(renderOverviewRow).join('')}</tbody></table>` : '<div class="empty-state"><h3>該当するタスクがありません</h3></div>'}</section>`;
+}
+
+function renderOverviewRow(task) {
+  const store = data.stores.find((entry) => entry.id === task.storeId);
+  const assignee = memberById(task.assigneeId);
+  const complete = isComplete(task);
+  const waiting = task.confirmers.length > 0 && Object.keys(task.completions).length > 0 && !complete;
+  const status = task.skippedAt ? 'スキップ' : complete ? '完了' : waiting ? '確認待ち' : '未完了';
+  const overdue = !task.skippedAt && !complete && task.dueDate && task.dueDate < today();
+  const assignedTo = task.scope === 'personal' ? `${avatar(assignee, 'tiny')}<span>${escapeHtml(assignee?.name)}</span>` : task.confirmers.length ? `${icon('users')}<span>${task.confirmers.filter((id) => task.completions[id]).length}/${task.confirmers.length}人確認</span>` : `${icon('users')}<span>誰でも</span>`;
+  return `<tr><td class="overview-task"><div class="overview-title"><span class="task-kind" title="${task.scope === 'store' ? '店舗タスク' : '個人タスク'}">${icon(task.scope === 'store' ? 'store' : 'user')}<span class="sr-only">${task.scope === 'store' ? '店舗タスク' : '個人タスク'}</span></span><button class="table-title" data-action="detail" data-id="${escapeHtml(task.id)}">${escapeHtml(task.title)}</button>${task.templateId ? `<span class="repeat-marker" title="定期タスク">${icon('reset')}<span class="sr-only">定期タスク</span></span>` : ''}</div></td><td class="overview-location"><span class="overview-store-name">${escapeHtml(store?.name)}</span></td><td class="overview-person"><span class="overview-assignee">${assignedTo}</span></td><td class="overview-deadline"><span class="overview-due ${overdue ? 'late' : ''}">${overdue ? `<span title="期限超過">${icon('clock')}<span class="sr-only">期限超過</span></span>` : ''}${task.dueDate ? task.dueDate.replaceAll('-', '/') : '—'}</span></td><td class="overview-status"><span class="status-badge ${complete && !task.skippedAt ? 'done' : ''}">${complete && !task.skippedAt ? icon('check') : ''}${status}</span></td></tr>`;
 }
 
 function renderTaskPage() {
@@ -139,14 +169,14 @@ function renderTaskPage() {
   const dueStats = { total: dueRows.length, done: dueRows.filter(({ complete }) => complete).length };
   const waiting = tasks.filter((task) => task.scope === 'store' && task.confirmers.length && !task.skippedAt && !isComplete(task) && Object.keys(task.completions).length).length;
   const scopeTabs = [['all', 'すべて'], ['store', '店舗'], ['mine', '自分'], ...(user().role === 'admin' ? [['personal', '全員の個人']] : [])];
-  return `${renderPageHeading('タスク', 'お店のことも、自分のことも。ひとつずつ、みんなで。')}
+  return `${renderPageHeading('タスク', true, fullDate(new Date()))}
     <div class="dashboard-grid"><section class="task-column" aria-label="タスク一覧">
-      <div class="summary-strip"><div class="summary-item"><span class="summary-symbol mint">${icon('calendar')}</span><div><span>今日までのタスク</span><strong>${dueStats.total}<small>件</small></strong></div></div><div class="summary-item"><span class="summary-symbol pale-green">${icon('check')}</span><div><span>完了したタスク</span><strong>${dueStats.done}<small>/ ${dueStats.total}件</small></strong></div></div><div class="summary-item"><span class="summary-symbol pale-yellow">${icon('users')}</span><div><span>みんなの確認待ち</span><strong>${waiting}<small>件</small></strong></div></div></div>
+      <div class="task-totals"><span>今日まで <strong>${dueStats.done}/${dueStats.total}</strong></span>${waiting ? `<span>確認待ち <strong>${waiting}</strong></span>` : ''}</div>
       <div class="task-panel"><div class="task-panel-heading"><div class="scope-tabs" role="group" aria-label="表示するタスク">${scopeTabs.map(([value, label]) => `<button class="scope-tab ${scopeFilter === value ? 'active' : ''}" data-action="scope" data-value="${value}" aria-pressed="${scopeFilter === value}">${label}${scopeFilter === value ? `<span>${taskRows.length}</span>` : ''}</button>`).join('')}</div></div>
         <div class="task-tools"><label class="search-box">${icon('search')}<input id="task-search" type="search" placeholder="タスクを検索" value="${escapeHtml(query)}" aria-label="タスクを検索" /></label><label class="status-select"><select id="status-filter" aria-label="完了状況で絞り込み"><option value="pending" ${statusFilter === 'pending' ? 'selected' : ''}>未完了</option><option value="all" ${statusFilter === 'all' ? 'selected' : ''}>すべての状態</option><option value="skipped" ${statusFilter === 'skipped' ? 'selected' : ''}>スキップ済み</option><option value="done" ${statusFilter === 'done' ? 'selected' : ''}>完了済み</option></select>${icon('down')}</label></div>
         <div class="task-list">${renderTaskGroups(taskRows)}</div>
         <button class="inline-add" data-action="add">${icon('plus')}タスクを追加する</button>
-      </div><div class="task-legend"><span><span class="legend-circle"></span>丸を押して完了・取り消し</span><span>${icon('users')}全員確認は、各メンバーの操作が必要です</span></div>
+      </div>
     </section><aside class="insight-column">${renderInsights()}</aside></div>`;
 }
 
@@ -169,7 +199,7 @@ function renderTaskGroups(taskRows) {
   const filtered = taskRows.filter(({ assignments, complete, skipped }) =>
     (statusFilter === 'all' || (statusFilter === 'skipped' ? skipped : statusFilter === 'done' ? complete : !complete && !skipped)) &&
     assignments.some((assignment) => `${assignment.title} ${assignment.detail} ${memberById(assignment.assigneeId)?.name || ''}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())));
-  if (!filtered.length) return `<div class="empty-state"><span>${icon(statusFilter === 'done' ? 'check' : 'leaf')}</span><h3>${query ? '該当するタスクがありません' : statusFilter === 'done' ? '完了したタスクはまだありません' : statusFilter === 'skipped' ? 'スキップしたタスクはまだありません' : 'やることが、すっきりしました'}</h3><p>${query ? '別の言葉や条件で探してみてください。' : statusFilter === 'done' ? '完了したタスクは、ここに並びます。' : statusFilter === 'skipped' ? '定期タスクの詳細から、今回分だけスキップできます。' : '新しいタスクを追加するか、完了済みのタスクを確認できます。'}</p></div>`;
+  if (!filtered.length) return `<div class="empty-state"><h3>${query ? '該当するタスクがありません' : statusFilter === 'done' ? '完了済みタスクはありません' : statusFilter === 'skipped' ? 'スキップ済みタスクはありません' : '未完了タスクはありません'}</h3></div>`;
   const groups = [
     { title: '期限を過ぎています', className: 'overdue', match: ({ task, complete, skipped }) => !skipped && task.dueDate && task.dueDate < today() && !complete },
     { title: '今日まで', className: 'today-group', match: ({ task, complete, skipped }) => !skipped && task.dueDate && task.dueDate <= today() && (task.dueDate === today() || complete) },
@@ -188,26 +218,23 @@ function renderTaskRow({ task, assignments, complete, skipped }) {
   const allowed = canComplete(task, user());
   const confirmCount = task.confirmers.filter((id) => task.completions[id]).length;
   const assignee = memberById(task.assigneeId);
-  const label = groupedPersonal ? `${assignments.length}人に割り当て` : task.scope === 'personal' ? assignee?.shortName : task.confirmers.length ? '全員確認' : '誰でもOK';
+  const label = groupedPersonal ? `${assignments.length}人` : task.scope === 'personal' ? assignee?.shortName : task.confirmers.length ? '全員確認' : '誰でもOK';
   const assignmentProgress = groupedPersonal ? `<span class="confirmation-label">${assignments.filter(isComplete).length}/${assignments.length}人完了${assignments.some((assignment) => assignment.skippedAt) ? ` · ${assignments.filter((assignment) => assignment.skippedAt).length}人スキップ` : ''}</span>` : '';
   const assignedAvatars = groupedPersonal ? `<div class="avatar-stack">${assignments.slice(0, 3).map((assignment) => avatar(memberById(assignment.assigneeId), 'tiny')).join('')}</div>` : '';
   const overdue = task.dueDate && task.dueDate < today() && !complete && !skipped;
   return `<article class="task-row ${complete || skipped ? 'complete' : ''}">
     <button class="completion-check ${complete || checked ? 'checked' : ''} ${checked && !complete ? 'partial' : ''}" data-action="complete" data-id="${escapeHtml(task.id)}" ${allowed ? '' : 'disabled'} aria-label="${escapeHtml(task.title)}：${checked ? '自分の完了を取り消す' : complete ? '完了済み' : task.confirmers.length ? '自分の確認を完了する' : '完了する'}" aria-pressed="${checked || complete}" title="${allowed ? checked ? '完了を取り消す' : '完了する' : task.scope === 'personal' ? '本人が完了操作できます' : complete ? '完了した本人が取り消せます' : '指定された確認者が操作できます'}">${complete || checked ? icon('check') : ''}</button>
-    <button class="task-content" data-action="detail" data-id="${escapeHtml(task.id)}"><span class="task-title">${escapeHtml(task.title)}</span><span class="task-meta"><span class="scope-label ${task.scope}">${icon(task.scope === 'store' ? 'store' : 'user')}${task.scope === 'store' ? '店舗' : '個人'}</span><span class="meta-separator"></span><span class="due-label ${overdue ? 'late' : ''}">${icon('calendar')}${task.dueDate === today() ? '今日' : shortDate(task.dueDate)}</span>${task.templateId ? '<span class="recurring-badge">定期</span>' : ''}${skipped ? '<span class="recurring-badge">スキップ済み</span>' : ''}${assignmentProgress}${task.confirmers.length ? `<span class="confirmation-label">${confirmCount}/${task.confirmers.length}人確認済み</span>` : ''}</span></button>
+    <button class="task-content" data-action="detail" data-id="${escapeHtml(task.id)}"><span class="task-title">${escapeHtml(task.title)}</span><span class="task-meta"><span class="scope-label ${task.scope}">${icon(task.scope === 'store' ? 'store' : 'user')}<span class="sr-only">${task.scope === 'store' ? '店舗' : '個人'}</span></span><span class="due-label ${overdue ? 'late' : ''}">${icon('calendar')}${task.dueDate === today() ? '今日' : shortDate(task.dueDate)}</span>${task.templateId ? `<span class="repeat-marker" title="定期タスク">${icon('reset')}<span class="sr-only">定期タスク</span></span>` : ''}${skipped ? '<span class="recurring-badge">スキップ済み</span>' : ''}${assignmentProgress}${task.confirmers.length ? `<span class="confirmation-label">${confirmCount}/${task.confirmers.length}人確認</span>` : ''}</span></button>
     <div class="task-assignee">${assignedAvatars || (task.scope === 'personal' ? avatar(assignee, 'small') : task.confirmers.length ? `<div class="avatar-stack">${task.confirmers.slice(0, 3).map((id) => avatar(memberById(id), 'tiny')).join('')}</div>` : `<span class="anyone-avatar">${icon('users')}</span>`)}<span>${escapeHtml(label)}</span></div><button class="row-open icon-button" data-action="detail" data-id="${escapeHtml(task.id)}" aria-label="${escapeHtml(task.title)}の詳細">${icon('chevron')}</button></article>`;
 }
 
 function renderInsights() {
-  const storeTasks = readableTasks().filter((task) => task.scope === 'store');
-  const stats = taskStats(storeTasks);
-  const percentage = stats.total ? Math.round(stats.done / stats.total * 100) : 0;
-  return `<section class="store-progress"><div class="section-eyebrow">${icon('leaf')}お店の進みぐあい</div><div class="progress-ring-wrap"><div class="progress-ring" style="--progress:${percentage}%"><div><strong>${stats.done}<small>/ ${stats.total}</small></strong><span>店舗タスク完了</span></div></div><span class="ring-leaf">${icon('leaf')}</span></div><h2>${stats.pending ? 'ひとつの完了が、みんなの力に。' : 'みんなで、すっきり。'}</h2><p>${stats.pending ? `あと${stats.pending}件。できることから進めましょう。` : '店舗タスクがすべて完了しました。'}</p><div class="team-avatar-line"><div class="avatar-stack">${storeMembers().slice(0, 5).map((member) => avatar(member, 'small')).join('')}</div><span>${storeMembers().length}人で、ひとつのチーム</span></div></section>
-    <section class="team-progress"><div class="section-heading"><h2>${user().role === 'admin' ? 'みんなの個人タスク' : '自分の個人タスク'}</h2>${user().role === 'admin' ? `<button class="text-button" data-action="navigate" data-page="progress">一覧${icon('arrow')}</button>` : ''}</div>${storeMembers().filter((member) => user().role === 'admin' || member.id === user().id).map((member) => {
+  const stats = taskStats(readableTasks().filter((task) => task.scope === 'store'));
+  return `<section class="store-progress"><div class="section-heading"><h2>店舗タスク</h2><span class="progress-fraction" aria-label="${stats.done}/${stats.total}件完了">${stats.done}<span> / ${stats.total}</span></span></div><div class="progress-track"><span style="width:${stats.total ? stats.done / stats.total * 100 : 0}%"></span></div></section>
+    <section class="team-progress"><div class="section-heading"><h2>${user().role === 'admin' ? '個人タスク' : '自分のタスク'}</h2>${user().role === 'admin' ? `<button class="text-button" data-action="navigate" data-page="progress">一覧${icon('arrow')}</button>` : ''}</div>${storeMembers().filter((member) => user().role === 'admin' || member.id === user().id).map((member) => {
       const stats = taskStats(readableTasks().filter((task) => task.scope === 'personal' && task.assigneeId === member.id));
-      return `<div class="member-progress-row"><div>${avatar(member, 'small')}<span>${escapeHtml(member.shortName)}さん${member.id === user().id ? '<small>あなた</small>' : ''}</span><strong>${stats.done}<span>/${stats.total}</span></strong></div><div class="progress-track"><span style="width:${stats.total ? stats.done / stats.total * 100 : 0}%"></span></div></div>`;
-    }).join('')}</section>
-    <div class="demo-tip">${icon('info')}<div><strong>メンバーの視点も試せます</strong><p>右上の名前を切り替えると、各メンバーの画面や操作を体験できます。</p></div></div>${user().role === 'admin' ? `<button class="export-button" data-action="export">${icon('download')}データを書き出す${icon('chevron')}</button>` : ''}<button class="mobile-reset text-button" data-action="reset">${icon('reset')}デモをリセット</button>`;
+      return `<div class="member-progress-row"><div>${avatar(member, 'small')}<span>${escapeHtml(member.shortName)}</span><strong aria-label="${stats.done}/${stats.total}件完了">${stats.done}<span>/${stats.total}</span></strong></div><div class="progress-track"><span style="width:${stats.total ? stats.done / stats.total * 100 : 0}%"></span></div></div>`;
+    }).join('')}</section>${user().role === 'admin' ? `<button class="export-button" data-action="export">${icon('download')}書き出す</button>` : ''}`;
 }
 
 function renderProgress() {
@@ -217,19 +244,19 @@ function renderProgress() {
     const key = task.groupId || task.id;
     groups.set(key, [...(groups.get(key) || []), task]);
   });
-  return `${renderPageHeading('みんなの進捗', '同じタスクも、一人ひとりの完了が見える。')}
+  return `${renderPageHeading('みんなの進捗')}
     <div class="member-summary-grid">${storeMembers().map((member) => {
       const stats = taskStats(tasks.filter((task) => task.assigneeId === member.id));
-      return `<button class="member-summary ${selectedMember === member.id ? 'selected' : ''}" data-action="member-filter" data-id="${escapeHtml(member.id)}">${avatar(member)}<div><strong>${escapeHtml(member.name)}${member.role === 'admin' ? '<span class="role-badge">店長</span>' : ''}</strong><p>個人タスク <b>${stats.done}</b> / ${stats.total} 完了</p><div class="progress-track"><span style="width:${stats.total ? stats.done / stats.total * 100 : 0}%"></span></div></div></button>`;
+      return `<button class="member-summary ${selectedMember === member.id ? 'selected' : ''}" data-action="member-filter" data-id="${escapeHtml(member.id)}">${avatar(member)}<div><strong>${escapeHtml(member.name)}${member.role === 'admin' ? '<span class="role-badge">店長</span>' : ''}</strong><p><b>${stats.done}</b> / ${stats.total}</p><div class="progress-track"><span style="width:${stats.total ? stats.done / stats.total * 100 : 0}%"></span></div></div></button>`;
     }).join('')}</div>
-    <section class="progress-panel"><div class="progress-panel-heading"><h2>個人タスクの進捗</h2><button class="text-button" data-action="member-filter" data-id="all">${selectedMember === 'all' ? '全メンバーを表示中' : '絞り込みを解除'}</button></div><div class="progress-table-scroll"><table class="progress-table"><thead><tr><th>タスク / 期限</th>${storeMembers().map((member) => `<th>${avatar(member, 'small')}<span>${escapeHtml(member.shortName)}さん</span></th>`).join('')}</tr></thead><tbody>${[...groups.values()].map((group) => `<tr><td><button class="table-title" data-action="detail" data-id="${escapeHtml(group[0].id)}">${escapeHtml(group[0].title)}</button><span class="table-date">${icon('calendar')}${shortDate(group[0].dueDate)}${group.length > 1 ? '<span class="shared-label">まとめて割り当て</span>' : ''}</span></td>${storeMembers().map((member) => {
+    <section class="progress-panel"><div class="progress-panel-heading"><h2>個人タスクの進捗</h2><button class="text-button" data-action="member-filter" data-id="all">${selectedMember === 'all' ? '全員' : 'クリア'}</button></div><div class="progress-table-scroll"><table class="progress-table"><thead><tr><th>タスク / 期限</th>${storeMembers().map((member) => `<th>${avatar(member, 'small')}<span>${escapeHtml(member.shortName)}さん</span></th>`).join('')}</tr></thead><tbody>${[...groups.values()].map((group) => `<tr><td><button class="table-title" data-action="detail" data-id="${escapeHtml(group[0].id)}">${escapeHtml(group[0].title)}</button><span class="table-date">${icon('calendar')}${shortDate(group[0].dueDate)}${group.length > 1 ? '' : ''}</span></td>${storeMembers().map((member) => {
       const task = group.find((entry) => entry.assigneeId === member.id);
       return `<td>${task ? `<button class="progress-status ${isComplete(task) ? 'done' : 'pending'}" data-action="detail" data-id="${escapeHtml(task.id)}">${isComplete(task) ? icon('check') : '<span class="status-dot"></span>'}${isComplete(task) ? '完了' : '未完了'}</button>` : '<span class="not-assigned" aria-label="割り当てなし">—</span>'}</td>`;
-    }).join('')}</tr>`).join('') || `<tr><td colspan="${storeMembers().length + 1}">個人タスクはまだありません。</td></tr>`}</tbody></table></div><p class="panel-note">${icon('info')}個人タスクの完了・取り消しは、割り当てられた本人が操作します。</p></section>`;
+    }).join('')}</tr>`).join('') || `<tr><td colspan="${storeMembers().length + 1}">個人タスクはまだありません。</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderMembers() {
-  return `${renderPageHeading('メンバー管理', 'このお店のメンバーと、役割を管理します。', false)}<section class="members-panel"><div class="progress-panel-heading"><h2>この店舗のメンバー <span class="count-badge">${storeMembers().length}</span></h2><button class="button primary" data-action="invite">${icon('plus')}メンバーを追加</button></div><div class="member-list">${storeMembers().map((member) => `<div class="member-management-row">${avatar(member)}<div class="member-name"><strong>${escapeHtml(member.name)}</strong><span>${member.id === user().id ? 'あなた · ' : ''}${escapeHtml(currentStore().name)}</span></div><label class="role-select"><span class="sr-only">${escapeHtml(member.name)}の権限</span><select data-role-member="${escapeHtml(member.id)}" ${member.id === user().id ? 'disabled title="自分の権限は変更できません"' : ''}><option value="admin" ${member.role === 'admin' ? 'selected' : ''}>管理者（店長）</option><option value="member" ${member.role === 'member' ? 'selected' : ''}>通常メンバー</option></select></label></div>`).join('')}</div><div class="member-policy">${icon('shield')}<div><strong>お店ごとに、見える範囲を分けます。</strong><p>店長は店舗のすべてのタスクを、通常メンバーは店舗タスクと自分の個人タスクを確認できます。</p></div></div></section><div class="demo-notice">${icon('info')}このモックのメンバー追加は体験用です。本番ではGoogleログインと許可メンバーの登録を接続します。</div><button class="export-button standalone-export" data-action="export">${icon('download')}バックアップ用データを書き出す${icon('chevron')}</button>`;
+  return `${renderPageHeading('メンバー', false)}<section class="members-panel"><div class="progress-panel-heading"><span class="list-count">${storeMembers().length}人</span><button class="button primary" data-action="invite">${icon('plus')}追加</button></div><div class="member-list">${storeMembers().map((member) => `<div class="member-management-row">${avatar(member)}<div class="member-name"><strong>${escapeHtml(member.name)}</strong></div><label class="role-select"><span class="sr-only">${escapeHtml(member.name)}の権限</span><select data-role-member="${escapeHtml(member.id)}" ${member.id === user().id ? 'disabled title="自分の権限は変更できません"' : ''}><option value="admin" ${member.role === 'admin' ? 'selected' : ''}>店長</option><option value="member" ${member.role === 'member' ? 'selected' : ''}>メンバー</option></select></label></div>`).join('')}</div></section><details class="context-help"><summary>権限</summary><p>店長は店舗内のすべてのタスクを閲覧できます。メンバーは店舗タスクと自分の個人タスクを閲覧できます。</p></details><button class="export-button standalone-export" data-action="export">${icon('download')}書き出す</button>`;
 }
 
 const weekdayNames = ['日', '月', '火', '水', '木', '金', '土'];
@@ -237,16 +264,15 @@ const scheduleLabel = (schedule) => schedule.frequency === 'weekly' ? `毎週${w
 
 function renderRecurring() {
   const templates = storeTemplates();
-  return `${renderPageHeading('定期タスク', 'シフトも月報も、一度決めたら毎回のやることに。', false)}
-    <section class="recurring-panel"><div class="progress-panel-heading"><h2>この店舗の繰り返し設定 <span class="count-badge">${templates.length}</span></h2><button class="button primary" data-action="add-recurring">${icon('plus')}定期タスクを追加</button></div>
-    <p class="recurring-guide">30日先までのタスクを自動で作成します。月に指定日がない場合は、その月の末日を期限にします。</p>
+  return `${renderPageHeading('定期タスク', false)}
+    <section class="recurring-panel"><div class="progress-panel-heading"><span class="list-count">${templates.length}件</span><button class="button primary" data-action="add-recurring">${icon('plus')}追加</button></div>
     <div class="recurring-list">${templates.map((template) => {
       const from = template.startDate > today() ? template.startDate : today();
       const nextDate = recurrenceDates(template.schedule, from, addDays(from, 370))[0];
-      const assignees = template.scope === 'personal' ? template.assigneeIds.map((id) => memberById(id)?.shortName).join('・') : template.confirmers.length ? '指定した全員の確認' : '誰か1人が完了';
-      return `<article class="recurring-row"><span class="recurring-symbol">${icon('reset')}</span><div class="recurring-description"><h3>${escapeHtml(template.title)}</h3><p><span class="recurring-badge">${scheduleLabel(template.schedule)}</span><span>${template.scope === 'personal' ? '個人' : '店舗'} · ${escapeHtml(assignees)}</span></p><small>${template.active ? `次の期限 ${nextDate ? nextDate.replaceAll('-', '/') : '未設定'}` : '自動作成を一時停止中（作成済みのタスクは残ります）'}</small></div><div class="recurring-actions"><button class="text-button" data-action="edit-recurring" data-id="${escapeHtml(template.id)}">${icon('edit')}編集</button><button class="button secondary" data-action="toggle-recurring" data-id="${escapeHtml(template.id)}">${template.active ? '一時停止' : '再開'}</button></div></article>`;
-    }).join('') || '<div class="empty-state"><h3>定期タスクを登録しましょう</h3><p>毎週・毎月のやることを、自動でタスクにできます。</p></div>'}</div></section>
-    <p class="panel-note">${icon('info')}今回分だけの期限変更・スキップは、タスク一覧の詳細から操作できます。このモックでは画面を開いたときと表示中に自動作成します。</p>`;
+      const assignees = template.scope === 'personal' ? template.assigneeIds.map((id) => memberById(id)?.shortName).join('・') : template.confirmers.length ? '指定した全員' : '誰でも';
+      return `<article class="recurring-row"><div class="recurring-description"><h3>${escapeHtml(template.title)}</h3><p><span>${scheduleLabel(template.schedule)}</span><span>${escapeHtml(assignees)}</span></p></div><span class="recurring-next">${template.active ? `<span class="sr-only">次の期限</span>${nextDate ? nextDate.replaceAll('-', '/') : '—'}` : '停止中'}</span><div class="recurring-actions"><button class="text-button" data-action="edit-recurring" data-id="${escapeHtml(template.id)}">編集</button><button class="button secondary" data-action="toggle-recurring" data-id="${escapeHtml(template.id)}">${template.active ? '停止' : '再開'}</button></div></article>`;
+    }).join('') || '<div class="empty-state"><h3>定期タスクはありません</h3></div>'}</div></section>
+    <details class="context-help"><summary>自動作成について</summary><p>30日先まで作成します。指定日がない月は月末が期限です。停止しても作成済みのタスクは残ります。</p><p>このデモでは、画面を開いたときと表示中に更新します。</p></details>`;
 }
 
 function openModal(content, wide = false) {
@@ -271,6 +297,7 @@ function closeModal() {
 const modalHeading = (title, subtitle = '') => `<div class="modal-heading"><div><h2 id="modal-title">${title}</h2>${subtitle ? `<p>${subtitle}</p>` : ''}</div><button class="icon-button" data-action="close" aria-label="閉じる">${icon('close')}</button></div>`;
 
 function openTaskEditor(taskId, templateId, recurring = false) {
+  if (user().role === 'owner') return;
   const task = taskId ? data.tasks.find((entry) => entry.id === taskId) : null;
   const template = templateId ? storeTemplates().find((entry) => entry.id === templateId) : null;
   const isAdmin = user().role === 'admin';
@@ -279,26 +306,27 @@ function openTaskEditor(taskId, templateId, recurring = false) {
   const draft = task || template;
   const scope = draft?.scope || (['mine', 'personal'].includes(scopeFilter) ? 'personal' : 'store');
   const frequency = template?.schedule.frequency || (recurring ? 'weekly' : 'none');
-  const title = template ? '定期タスクを編集' : task ? '今回のタスクを編集' : recurring ? '新しい定期タスク' : '新しいタスク';
+  const title = template ? '定期タスクを編集' : task ? task.templateId ? '今回分を編集' : 'タスクを編集' : recurring ? '定期タスクを追加' : 'タスクを追加';
   const selectedAssignees = template?.assigneeIds || [task?.assigneeId || user().id];
-  openModal(`${modalHeading(title, task?.templateId ? '変更は今回分にだけ反映します。' : 'この店舗のやることと、担当を設定します。')}
+  openModal(`${modalHeading(title)}
     <form id="task-form" data-edit-id="${escapeHtml(task?.id || '')}" data-template-id="${escapeHtml(template?.id || '')}"><div class="modal-body">
       <p class="editor-store">${icon('store')}${escapeHtml(currentStore().name)}</p>
-      <fieldset class="scope-picker"><legend class="sr-only">タスクの種類</legend><label><input type="radio" name="scope" value="store" ${scope === 'store' ? 'checked' : ''} />${icon('store')}店舗タスク<span>お店のみんなで</span></label><label><input type="radio" name="scope" value="personal" ${scope === 'personal' ? 'checked' : ''} />${icon('user')}個人タスク<span>一人ひとりのやること</span></label></fieldset>
-      <label class="field-label" for="task-title">タスク名 <span class="required-mark">必須</span></label><input id="task-title" class="form-input" name="title" placeholder="例：月報を作成する" maxlength="100" required value="${escapeHtml(draft?.title || '')}" autofocus />
-      <label class="field-label" for="task-detail">詳細 <span class="optional-label">任意</span></label><textarea id="task-detail" class="form-input" name="detail" rows="3" maxlength="2000" placeholder="手順や、伝えておきたいこと">${escapeHtml(draft?.detail || '')}</textarea>
-      ${!task && isAdmin ? `<label class="field-label" for="task-repeat">繰り返し</label><select class="form-input" id="task-repeat" name="frequency">${[...(!template ? [['none', '繰り返しなし（単発）']] : []), ['weekly', '毎週、決まった曜日'], ['monthly', '毎月、決まった日'], ['monthEnd', '毎月、末日']].map(([value, label]) => `<option value="${value}" ${frequency === value ? 'selected' : ''}>${label}</option>`).join('')}</select>
+      <fieldset class="scope-picker"><legend class="sr-only">タスクの種類</legend><label><input type="radio" name="scope" value="store" ${scope === 'store' ? 'checked' : ''} />${icon('store')}店舗タスク</label><label><input type="radio" name="scope" value="personal" ${scope === 'personal' ? 'checked' : ''} />${icon('user')}個人タスク</label></fieldset>
+      <label class="field-label" for="task-title">タスク名 <span class="required-mark" aria-hidden="true">*</span></label><input id="task-title" class="form-input" name="title" placeholder="例：月報を作成する" maxlength="100" required value="${escapeHtml(draft?.title || '')}" autofocus />
+      <label class="field-label" for="task-detail">詳細 </label><textarea id="task-detail" class="form-input" name="detail" rows="3" maxlength="2000">${escapeHtml(draft?.detail || '')}</textarea>
+      ${!task && isAdmin ? `<label class="field-label" for="task-repeat">繰り返し</label><select class="form-input" id="task-repeat" name="frequency">${[...(!template ? [['none', 'なし']] : []), ['weekly', '毎週'], ['monthly', '毎月'], ['monthEnd', '月末']].map(([value, label]) => `<option value="${value}" ${frequency === value ? 'selected' : ''}>${label}</option>`).join('')}</select>
       <div id="repeat-weekday" ${frequency !== 'weekly' ? 'hidden' : ''}><label class="field-label" for="task-weekday">曜日</label><select class="form-input" id="task-weekday" name="weekday">${weekdayNames.map((day, index) => `<option value="${index}" ${(template?.schedule.weekday ?? 1) === index ? 'selected' : ''}>${day}曜日</option>`).join('')}</select></div>
-      <div id="repeat-day" ${frequency !== 'monthly' ? 'hidden' : ''}><label class="field-label" for="task-monthday">毎月の日付</label><select class="form-input" id="task-monthday" name="monthday">${Array.from({ length: 31 }, (_, index) => index + 1).map((day) => `<option value="${day}" ${(template?.schedule.day ?? 20) === day ? 'selected' : ''}>${day}日</option>`).join('')}</select><p class="field-note">指定日がない月は、月末を期限にします。</p></div>` : ''}
-      <label class="field-label" id="task-date-label" for="task-date">${frequency === 'none' ? '期限（任意）' : '繰り返しの開始日'}</label><input id="task-date" class="form-input date-input" type="date" name="dueDate" ${frequency !== 'none' ? 'required' : ''} value="${escapeHtml(task?.dueDate ?? template?.startDate ?? today())}" />
-      <p id="repeat-note" class="field-note" ${frequency === 'none' ? 'hidden' : ''}>開始日以降の設定した曜日・日付を期限として、30日先まで自動作成します。設定変更は今日以降の未着手分に反映します。個別に変更・スキップした分と、確認済みの分は残ります。</p>
-      <div id="personal-fields" ${scope !== 'personal' ? 'hidden' : ''}>${isAdmin ? `<p class="field-label">担当者${!task ? ' <span class="optional-label">複数選択で個別に割り当て</span>' : ''}</p><div class="member-checkboxes">${storeMembers().map((member) => `<label><input type="${task ? 'radio' : 'checkbox'}" name="assignees" value="${escapeHtml(member.id)}" ${selectedAssignees.includes(member.id) ? 'checked' : ''} />${avatar(member, 'tiny')}<span>${escapeHtml(member.shortName)}</span></label>`).join('')}</div>` : '<p class="field-note">個人タスクは、自分のタスクとして追加されます。</p>'}</div>
-      <div id="store-fields" ${scope !== 'store' ? 'hidden' : ''}>${isAdmin ? `<p class="field-label">完了に必要な確認</p><label class="form-radio"><input type="radio" name="confirmMode" value="anyone" ${!draft?.confirmers.length ? 'checked' : ''} /><span><strong>誰か1人が完了すればOK</strong><small>所属するメンバーなら誰でも操作できます</small></span></label><label class="form-radio"><input type="radio" name="confirmMode" value="all" ${draft?.confirmers.length ? 'checked' : ''} /><span><strong>指定した全員の確認が必要</strong><small>一人ひとりの確認状況を記録します</small></span></label><div id="confirmer-fields" class="member-checkboxes" ${!draft?.confirmers.length ? 'hidden' : ''}>${storeMembers().map((member) => `<label><input type="checkbox" name="confirmers" value="${escapeHtml(member.id)}" ${draft?.confirmers.includes(member.id) ? 'checked' : ''} />${avatar(member, 'tiny')}<span>${escapeHtml(member.shortName)}</span></label>`).join('')}</div>` : `<p class="field-note">${task?.confirmers.length ? 'このタスクは、店長が指定した全員の確認で完了します。' : '店舗タスクは、誰か1人が完了すると完了になります。'}</p>`}</div>
-      ${task ? '<p class="field-note edit-note">担当者・種類・確認条件を変更すると、完了状況をリセットします。</p>' : ''}<p id="form-error" class="form-error" role="alert"></p>
+      <div id="repeat-day" ${frequency !== 'monthly' ? 'hidden' : ''}><label class="field-label" for="task-monthday">毎月の日付</label><select class="form-input" id="task-monthday" name="monthday">${Array.from({ length: 31 }, (_, index) => index + 1).map((day) => `<option value="${day}" ${(template?.schedule.day ?? 20) === day ? 'selected' : ''}>${day}日</option>`).join('')}</select><p class="field-note">指定日がない月は月末。</p></div>` : ''}
+      <label class="field-label" id="task-date-label" for="task-date">${frequency === 'none' ? '期限' : '開始日'}</label><input id="task-date" class="form-input date-input" type="date" name="dueDate" ${frequency !== 'none' ? 'required' : ''} value="${escapeHtml(task?.dueDate ?? template?.startDate ?? today())}" />
+      <p id="repeat-note" class="field-note" ${frequency === 'none' ? 'hidden' : ''}>30日先まで作成。設定変更は未着手分に適用し、個別変更・確認済みのタスクは保持します。</p>
+      <div id="personal-fields" ${scope !== 'personal' ? 'hidden' : ''}>${isAdmin ? `<p class="field-label">担当者</p><div class="member-checkboxes">${storeMembers().map((member) => `<label><input type="${task ? 'radio' : 'checkbox'}" name="assignees" value="${escapeHtml(member.id)}" ${selectedAssignees.includes(member.id) ? 'checked' : ''} />${avatar(member, 'tiny')}<span>${escapeHtml(member.shortName)}</span></label>`).join('')}</div>` : `<p class="field-label">担当者</p><div class="assigned-self">${avatar(user(), 'tiny')}${escapeHtml(user().name)}</div>`}</div>
+      <div id="store-fields" ${scope !== 'store' ? 'hidden' : ''}>${isAdmin ? `<p class="field-label">完了条件</p><label class="form-radio"><input type="radio" name="confirmMode" value="anyone" ${!draft?.confirmers.length ? 'checked' : ''} /><span><strong>誰か1人</strong></span></label><label class="form-radio"><input type="radio" name="confirmMode" value="all" ${draft?.confirmers.length ? 'checked' : ''} /><span><strong>指定した全員</strong></span></label><div id="confirmer-fields" class="member-checkboxes" ${!draft?.confirmers.length ? 'hidden' : ''}>${storeMembers().map((member) => `<label><input type="checkbox" name="confirmers" value="${escapeHtml(member.id)}" ${draft?.confirmers.includes(member.id) ? 'checked' : ''} />${avatar(member, 'tiny')}<span>${escapeHtml(member.shortName)}</span></label>`).join('')}</div>` : `<p class="field-note">完了条件：${task?.confirmers.length ? '指定した全員' : '誰か1人'}</p>`}</div>
+      ${task ? '<p class="field-note edit-note">担当者・種類・完了条件を変えると、完了状況をリセットします。</p>' : ''}<p id="form-error" class="form-error" role="alert"></p>
     </div><div class="modal-footer"><button type="button" class="button secondary" data-action="close">キャンセル</button><button type="submit" class="button primary">${task || template ? '変更を保存' : '追加する'}</button></div></form>`);
 }
 
 function saveTask(form) {
+  if (user().role === 'owner') return;
   const fields = new FormData(form);
   const task = data.tasks.find((entry) => entry.id === form.dataset.editId);
   const template = storeTemplates().find((entry) => entry.id === form.dataset.templateId);
@@ -344,9 +372,9 @@ function openDetail(taskId) {
   if (!task || !canRead(task, user())) return;
   const complete = isComplete(task);
   const checked = Boolean(task.completions[user().id]);
-  const groupTasks = task.groupId ? readableTasks().filter((entry) => entry.groupId === task.groupId) : [task];
+  const groupTasks = task.groupId ? data.tasks.filter((entry) => entry.groupId === task.groupId && entry.storeId === task.storeId && canRead(entry, user())) : [task];
   const confirmationMembers = task.scope === 'personal' ? groupTasks.map((entry) => ({ member: memberById(entry.assigneeId), timestamp: entry.completions[entry.assigneeId], skipped: Boolean(entry.skippedAt) })) : task.confirmers.length ? task.confirmers.map((id) => ({ member: memberById(id), timestamp: task.completions[id] })) : Object.entries(task.completions).map(([id, timestamp]) => ({ member: memberById(id), timestamp }));
-  openModal(`${modalHeading('タスクの詳細')}<div class="modal-body detail-body"><span class="detail-scope ${task.scope}">${icon(task.scope === 'store' ? 'store' : 'user')}${task.scope === 'store' ? '店舗タスク' : '個人タスク'}</span>${task.templateId ? '<span class="recurring-badge">定期タスク</span>' : ''}<h3 class="detail-title">${escapeHtml(task.title)}</h3><div class="detail-properties"><span>${icon('calendar')}期限</span><strong>${task.dueDate ? task.dueDate.replaceAll('-', '/') : '設定なし'}</strong><span>${icon('user')}作成者</span><strong>${escapeHtml(memberById(task.createdBy)?.name || 'メンバー')}</strong><span>${icon('check')}完了条件</span><strong>${task.scope === 'personal' ? '担当者本人の完了' : task.confirmers.length ? `指定した${task.confirmers.length}人全員の確認` : '誰か1人の完了'}</strong></div><div class="detail-description">${task.detail ? escapeHtml(task.detail) : '<span class="muted">詳細はありません。</span>'}</div><section class="detail-confirmations"><h4>${task.scope === 'personal' ? groupTasks.length > 1 ? '担当者ごとの完了状況' : '担当者の完了状況' : 'メンバーの確認状況'}</h4>${confirmationMembers.length ? confirmationMembers.map(({ member, timestamp, skipped }) => `<div class="confirmation-person">${avatar(member, 'small')}<span>${escapeHtml(member?.name || '')}<small>${timestamp ? `${new Date(timestamp).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} 完了` : skipped ? '今回分はスキップ済みです' : 'まだ完了していません'}</small></span><span class="status-badge ${timestamp ? 'done' : ''}">${timestamp ? `${icon('check')}完了` : skipped ? 'スキップ' : '未完了'}</span></div>`).join('') : '<p class="field-note">まだ完了したメンバーはいません。</p>'}</section>${task.skippedAt ? '<p class="skip-notice">今回分はスキップ済みです。</p>' : ''}${canComplete(task, user()) ? `<button class="button ${checked ? 'secondary' : 'primary'} full-width" data-action="complete" data-id="${escapeHtml(task.id)}" data-detail="true">${icon(checked ? 'reset' : 'check')}${checked ? '自分の完了を取り消す' : task.confirmers.length ? '自分の確認を完了する' : '完了にする'}</button>` : task.skippedAt ? '' : `<p class="field-note">${task.scope === 'personal' ? '完了・取り消しは担当者本人が操作できます。' : complete ? '完了した本人が取り消せます。' : '指定された確認者が操作できます。'}</p>`}</div>${canEdit(task, user()) ? `<div class="modal-footer detail-actions">${task.templateId ? `<button class="text-button" data-action="skip-occurrence" data-id="${escapeHtml(task.id)}" ${!task.skippedAt && Object.keys(task.completions).length ? 'disabled' : ''}>${task.skippedAt ? 'スキップを取り消す' : task.scope === 'personal' ? 'この担当者の今回分をスキップ' : '今回分をスキップ'}</button>` : `<button class="text-button danger" data-action="delete" data-id="${escapeHtml(task.id)}">${icon('trash')}削除</button>`}<button class="button secondary" data-action="edit" data-id="${escapeHtml(task.id)}">${icon('edit')}編集する</button></div>` : ''}`);
+  openModal(`${modalHeading(escapeHtml(task.title))}<div class="modal-body detail-body"><div class="detail-tags"><span class="detail-scope ${task.scope}">${icon(task.scope === 'store' ? 'store' : 'user')}${task.scope === 'store' ? '店舗' : '個人'}</span>${task.templateId ? '<span class="recurring-badge">定期</span>' : ''}${user().role === 'owner' ? '<span class="readonly-status">閲覧のみ</span>' : ''}</div><div class="detail-properties"><span>${icon('store')}店舗</span><strong>${escapeHtml(data.stores.find((store) => store.id === task.storeId)?.name)}</strong><span>${icon('calendar')}期限</span><strong>${task.dueDate ? task.dueDate.replaceAll('-', '/') : '—'}</strong><span>${icon('user')}作成者</span><strong>${escapeHtml(memberById(task.createdBy)?.name || 'メンバー')}</strong><span>${icon('check')}完了条件</span><strong>${task.scope === 'personal' ? '担当者本人' : task.confirmers.length ? `指定した${task.confirmers.length}人全員` : '誰か1人'}</strong></div>${task.detail ? `<div class="detail-description">${escapeHtml(task.detail)}</div>` : ''}${confirmationMembers.length ? `<section class="detail-confirmations"><h4>${task.scope === 'personal' ? '担当者' : '確認状況'}</h4>${confirmationMembers.map(({ member, timestamp, skipped }) => `<div class="confirmation-person">${avatar(member, 'small')}<span>${escapeHtml(member?.name || '')}${timestamp ? `<small>${new Date(timestamp).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small>` : ''}</span><span class="status-badge ${timestamp ? 'done' : ''}">${timestamp ? `${icon('check')}完了` : skipped ? 'スキップ' : '未完了'}</span></div>`).join('')}</section>` : ''}${task.skippedAt ? '<p class="skip-notice">スキップ済み</p>' : ''}${canComplete(task, user()) ? `<button class="button ${checked ? 'secondary' : 'primary'} full-width" data-action="complete" data-id="${escapeHtml(task.id)}" data-detail="true">${icon(checked ? 'reset' : 'check')}${checked ? '完了を取り消す' : task.confirmers.length ? '自分の確認を完了' : '完了にする'}</button>` : task.skippedAt || user().role === 'owner' ? '' : `<p class="field-note">${task.scope === 'personal' ? '担当者のみ操作できます。' : complete ? '完了した本人のみ取り消せます。' : '指定した確認者のみ操作できます。'}</p>`}</div>${canEdit(task, user()) ? `<div class="modal-footer detail-actions">${task.templateId ? `<button class="text-button" data-action="skip-occurrence" data-id="${escapeHtml(task.id)}" ${!task.skippedAt && Object.keys(task.completions).length ? 'disabled' : ''}>${task.skippedAt ? 'スキップを取り消す' : task.scope === 'personal' ? 'この担当者の今回分をスキップ' : '今回分をスキップ'}</button>` : `<button class="text-button danger" data-action="delete" data-id="${escapeHtml(task.id)}">${icon('trash')}削除</button>`}<button class="button secondary" data-action="edit" data-id="${escapeHtml(task.id)}">編集</button></div>` : ''}`);
 }
 
 function confirmDelete(taskId) {
@@ -357,12 +385,12 @@ function confirmDelete(taskId) {
 
 function openInvite() {
   if (user().role !== 'admin') return;
-  openModal(`${modalHeading('体験用メンバーを追加', '架空の名前で、画面の見え方を試せます。')}<form id="member-form"><div class="modal-body"><label class="field-label" for="member-name">名前 <span class="required-mark">必須</span></label><input class="form-input" id="member-name" name="name" maxlength="30" required placeholder="例：山田 花子" autofocus /><label class="field-label" for="member-role">権限</label><select class="form-input" id="member-role" name="role"><option value="member">通常メンバー</option><option value="admin">管理者（店長）</option></select><p class="field-note">実際の招待やメール送信は行われません。</p><p class="form-error" id="form-error" role="alert"></p></div><div class="modal-footer"><button type="button" class="button secondary" data-action="close">キャンセル</button><button class="button primary" type="submit">追加する</button></div></form>`);
+  openModal(`${modalHeading('メンバーを追加')}<form id="member-form"><div class="modal-body"><label class="field-label" for="member-name">名前 <span class="required-mark" aria-hidden="true">*</span></label><input class="form-input" id="member-name" name="name" maxlength="30" required placeholder="例：山田 花子" autofocus /><label class="field-label" for="member-role">権限</label><select class="form-input" id="member-role" name="role"><option value="member">通常メンバー</option><option value="admin">管理者（店長）</option></select><p class="form-error" id="form-error" role="alert"></p></div><div class="modal-footer"><button type="button" class="button secondary" data-action="close">キャンセル</button><button class="button primary" type="submit">追加する</button></div></form>`);
 }
 
 function openStoreEditor() {
   if (user().role !== 'admin') return;
-  openModal(`${modalHeading('体験用の店舗を追加', '店舗ごとにメンバーとタスクを分けて管理できます。')}<form id="store-form"><div class="modal-body"><label class="field-label" for="store-name">店舗名 <span class="required-mark">必須</span></label><input class="form-input" id="store-name" name="name" maxlength="50" required autofocus placeholder="例：こもれび珈琲 南店" /><label class="field-label" for="store-manager">店長の名前 <span class="required-mark">必須</span></label><input class="form-input" id="store-manager" name="managerName" maxlength="30" required placeholder="例：山田 花子" /><p id="form-error" class="form-error" role="alert"></p></div><div class="modal-footer"><button type="button" class="button secondary" data-action="close">キャンセル</button><button type="submit" class="button primary">店舗を追加</button></div></form>`);
+  openModal(`${modalHeading('店舗を追加')}<form id="store-form"><div class="modal-body"><label class="field-label" for="store-name">店舗名 <span class="required-mark" aria-hidden="true">*</span></label><input class="form-input" id="store-name" name="name" maxlength="50" required autofocus placeholder="例：こもれび珈琲 南店" /><label class="field-label" for="store-manager">店長の名前 <span class="required-mark" aria-hidden="true">*</span></label><input class="form-input" id="store-manager" name="managerName" maxlength="30" required placeholder="例：山田 花子" /><p id="form-error" class="form-error" role="alert"></p></div><div class="modal-footer"><button type="button" class="button secondary" data-action="close">キャンセル</button><button type="submit" class="button primary">店舗を追加</button></div></form>`);
 }
 
 function exportData() {
@@ -388,6 +416,7 @@ document.addEventListener('click', (event) => {
   const { action, id, value } = button.dataset;
   if (action === 'navigate') navigate(button.dataset.page);
   else if (action === 'add') openTaskEditor();
+  else if (action === 'demo-info') openModal(`${modalHeading('デモについて')}<div class="modal-body"><p>架空の店舗・メンバーを使った体験用です。右上で表示するメンバーを切り替えられます。</p><p class="field-note">変更はこのブラウザに保存されます。招待・メール送信は行いません。</p></div><div class="modal-footer"><button class="text-button" data-action="reset">デモをリセット</button></div>`);
   else if (action === 'add-store') openStoreEditor();
   else if (action === 'add-recurring') openTaskEditor(null, null, true);
   else if (action === 'edit-recurring') openTaskEditor(null, id);
@@ -408,6 +437,7 @@ document.addEventListener('click', (event) => {
     persist(); render(); openDetail(id); toast(task.skippedAt ? 'スキップを取り消しました' : '今回分をスキップしました');
   } else if (action === 'close') closeModal();
   else if (action === 'scope') { scopeFilter = value; render(); }
+  else if (action === 'overview-store' && user().role === 'owner') { overviewStore = id; render(); }
   else if (action === 'detail') openDetail(id);
   else if (action === 'edit') openTaskEditor(id);
   else if (action === 'delete') confirmDelete(id);
@@ -428,7 +458,7 @@ document.addEventListener('click', (event) => {
   else if (action === 'invite') openInvite();
   else if (action === 'export') exportData();
   else if (action === 'reset') openModal(`${modalHeading('デモを最初の状態に戻しますか？')}<div class="modal-body"><p class="confirmation-copy">追加・編集したタスクとメンバーを消して、最初のサンプルデータに戻します。</p></div><div class="modal-footer"><button class="button secondary" data-action="close">キャンセル</button><button class="button primary" data-action="confirm-reset">最初の状態に戻す</button></div>`);
-  else if (action === 'confirm-reset') { data = createSeed(); currentUserId = 'misaki'; persist(); navigate('today'); toast('デモを最初の状態に戻しました'); }
+  else if (action === 'confirm-reset') { data = createSeed(); currentUserId = data.members.find((member) => member.role === 'owner').id; persist(); navigate('today'); toast('デモを最初の状態に戻しました'); }
 });
 
 document.addEventListener('input', (event) => {
@@ -438,6 +468,7 @@ document.addEventListener('input', (event) => {
 document.addEventListener('change', (event) => {
   const target = event.target;
   if (target.id === 'demo-user') { currentUserId = target.value; navigate('today'); toast(`${user().name}さんの画面に切り替えました`); }
+  else if (target.id === 'overview-store-filter' && user().role === 'owner') { overviewStore = target.value; render(); }
   else if (target.id === 'store-switcher') {
     const manager = data.members.find((member) => member.storeId === target.value && member.role === 'admin');
     if (!manager) return;
@@ -447,7 +478,7 @@ document.addEventListener('change', (event) => {
     document.querySelector('#repeat-weekday').hidden = target.value !== 'weekly';
     document.querySelector('#repeat-day').hidden = target.value !== 'monthly';
     document.querySelector('#repeat-note').hidden = target.value === 'none';
-    document.querySelector('#task-date-label').textContent = target.value === 'none' ? '期限（任意）' : '繰り返しの開始日';
+    document.querySelector('#task-date-label').textContent = target.value === 'none' ? '期限' : '開始日';
     document.querySelector('#task-date').required = target.value !== 'none';
   }
   else if (target.id === 'status-filter') { statusFilter = target.value; render(); }
